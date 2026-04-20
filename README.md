@@ -315,6 +315,30 @@ than the in-container bind address.
 - `./artifacts/logs` → `/app/artifacts/logs` — rotating log file is
   tail-able from the host (`tail -f artifacts/logs/agent.log`).
 
+### Running on a Windows corporate machine (no Docker Desktop)
+
+If Docker Desktop is blocked or failed to install (common on locked-down
+corp laptops), run Docker Engine **inside WSL2 + Ubuntu** instead:
+
+```powershell
+# one-time
+wsl --install -d Ubuntu                       # then finish first-boot setup
+# ... install docker-ce + docker-compose-plugin inside Ubuntu
+# ... sudo usermod -aG docker "$USER"
+
+# every run (from PowerShell, or direct from Ubuntu shell)
+wsl -d Ubuntu --cd "/mnt/c/.../OnlineResearchAgent" docker compose up --build
+```
+
+Key gotchas: `docker` is only available **inside WSL** (prefix every
+command with `wsl -d Ubuntu ...` from PowerShell); use `curl.exe` or
+`irm` instead of PowerShell's `curl` alias; the root `/` returns 405 in
+a browser (expected — use `/.well-known/agent-card.json` instead).
+
+Full step-by-step recipe (WSL install, Ubuntu provisioning, Docker
+Engine install, permission fixes, port conflicts, PowerShell quirks):
+see [docs/windows-wsl-setup.md](docs/windows-wsl-setup.md).
+
 ---
 
 ## Project layout
@@ -359,6 +383,8 @@ OnlineResearchAgent/
 │   ├── cache/                      # JSONL caches (gitignored)
 │   └── logs/                       # rotating log file (gitignored)
 ├── development_logs/               # per-day dev notes
+├── docs/
+│   └── windows-wsl-setup.md        # detailed Accenture/Windows + WSL2 recipe
 ├── Dockerfile                      # two-stage build (builder + runtime)
 ├── docker-compose.yml              # one-service stack with persisted caches/logs
 ├── .dockerignore
