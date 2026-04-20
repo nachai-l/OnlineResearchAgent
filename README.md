@@ -1,15 +1,25 @@
 # Online Research Agent (A2A)
 
-A reference web-research agent exposed over Google's **A2A (Agent2Agent)
-protocol**. Given a natural-language query, it chains:
+**Deterministic web-research workflow agent** (not a tool-use loop) exposed
+over Google's **A2A (Agent2Agent) protocol**. On each query it runs a
+fixed 5-stage pipeline:
 
-    search → result selection → scrape → validity check → summarize
+    SerpAPI search (→ Google CSE fallback)
+        → LLM-picked URLs
+            → concurrent scrape
+                → LLM-scored relevance + trustworthiness gate
+                    → LLM grounded summary with inline [n] citations
 
-and returns a grounded markdown answer with inline `[n]` citations.
+Every external call (search, scrape, LLM) is **JSONL-cached** with a
+canonical-JSON SHA-256 key, so a repeated query is served with **zero
+HTTP and zero LLM calls**. Every LLM JSON response is **pydantic-validated**
+before reaching business logic; schema or transport failures share a
+single retry budget.
 
 Built as the canonical example for our agent catalogue — intentionally
 higher-bar than an ad-hoc script: **test-driven**, **JSONL-cached at
-every layer**, **structured-JSON logging**, and **fully typed settings**.
+every layer**, **structured-JSON logging**, **pydantic-validated LLM
+output**, and **fully typed settings**.
 
 ---
 
@@ -27,18 +37,43 @@ every layer**, **structured-JSON logging**, and **fully typed settings**.
 
 ## Pipeline stages
 
-1. **Search** — `WebSearcher`: SerpAPI primary, Google CSE fallback.
-   Cached by `{query, top_k, providers}`.
-2. **Select** — `ResultSelector`: Gemini picks the most promising `k`
-   URLs from the SERP. Garbage response falls back to the first `k`.
-3. **Scrape** — `WebScraper`: concurrent `httpx.AsyncClient` gated by
-   a semaphore; `trafilatura` extracts main content. Errors become
-   `ScrapedPage(status=0, ...)` rather than exceptions. Cached by URL.
-4. **Validate** — `PageValidator`: Gemini scores each page on
-   `relevance` and `trustworthiness` (both `[0, 1]`). Pages below
-   either threshold are dropped.
-5. **Summarize** — `Summarizer`: Gemini produces markdown with inline
-   `[n]` citations anchored to the surviving pages.
+Fixed order, executed sequentially by `ResearchPipeline.run(query)`. The
+LLM is a component *inside* the workflow (invoked at stages 2, 4, 5),
+never the orchestrator.
+
+| # | Stage      | Component         | Scale                                              | LLM? |
+|---|------------|-------------------|----------------------------------------------------|------|
+| 1 | Search     | `WebSearcher`     | `top_k_results` (8) — SerpAPI, Google CSE fallback | no   |
+| 2 | Select     | `ResultSelector`  | picks ≤ `top_k_to_scrape` (3) indices out of 8     | yes  |
+| 3 | Scrape     | `WebScraper`      | up to `top_k_to_scrape` URLs, concurrent           | no   |
+| 4 | Validate   | `PageValidator`   | scores every scraped page (one LLM call per page)  | yes  |
+| 5 | Summarize  | `Summarizer`      | only over pages **kept** by stage 4                | yes  |
+
+Stage-by-stage details:
+
+1. **Search** — SerpAPI primary, Google CSE fallback on error/quota.
+   Cached by `{query, top_k, provider}`.
+2. **Select** — The LLM picks the most promising indices from the
+   SERP. Garbage / malformed reply triggers the client's retry budget;
+   after exhaustion, the pipeline falls back to the first `k` results
+   so the run always makes progress.
+3. **Scrape** — Concurrent `httpx.AsyncClient` gated by a semaphore;
+   `trafilatura` extracts main content. Network / extraction errors
+   become `ScrapedPage(status=0, ...)` rather than exceptions. Cached
+   by URL; zombie entries (status=200, content="") auto-heal on read.
+4. **Validate** — The LLM scores each page on `relevance` and
+   `trustworthiness` (both `[0, 1]`, bounds enforced by pydantic).
+   Pages below either threshold are dropped.
+5. **Summarize** — The LLM produces markdown with inline `[n]` citations
+   anchored to **kept** pages only. Empty-kept-list (every page
+   rejected) produces a graceful "no reliable sources found" summary
+   rather than an error.
+
+**Short-circuits** (no error, just skip ahead):
+
+- Zero search results → jump directly to summarize-with-empty; no LLM
+  call at all.
+- Selector picks nothing → same.
 
 All five stages log a structured line with `stage=<name>`.
 

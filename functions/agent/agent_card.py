@@ -16,18 +16,30 @@ from a2a.types import (
 
 AGENT_NAME = "Online Research Agent"
 AGENT_DESCRIPTION = (
-    "Performs grounded web research on a user query by chaining "
-    "search → result selection → scraping → validity check → summarization, "
-    "returning a markdown answer with inline [n] citations."
+    "Deterministic web-research workflow agent (not a tool-use loop). "
+    "On each query it runs a fixed 5-stage pipeline: "
+    "SerpAPI search (Google CSE fallback) → LLM-picked URLs → concurrent "
+    "scrape → LLM-scored relevance + trustworthiness gate → LLM grounded "
+    "summary with inline [n] citations. "
+    "Every external call (search, scrape, LLM) is cached in an append-only "
+    "JSONL store keyed by canonical-JSON SHA-256, so a repeated query is "
+    "served with zero HTTP and zero LLM calls. Every LLM JSON response is "
+    "validated against a pydantic schema before reaching business logic; "
+    "schema or transport failures share a single retry budget."
 )
-AGENT_VERSION = "0.1.0"
+AGENT_VERSION = "0.2.0"
 
 SKILL_ID = "web_research"
 SKILL_NAME = "Web Research"
 SKILL_DESCRIPTION = (
-    "Given a natural-language query, search the web, pick the best sources, "
-    "scrape them, filter for validity, and return a grounded markdown summary "
-    "with citations."
+    "Accepts a natural-language research query (text/plain) and returns a "
+    "markdown answer (text/markdown) with inline [n] citations anchored to "
+    "the scraped sources. "
+    "Never raises on partial failure — zero search hits or pages rejected by "
+    "the validity gate produce a graceful 'no reliable sources found' summary "
+    "rather than an error. "
+    "Streams progress as TaskStatusUpdate(working) → TaskArtifactUpdate "
+    "(summary + sources) → TaskStatusUpdate(completed, final=true)."
 )
 
 
