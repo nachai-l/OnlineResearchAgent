@@ -7,6 +7,10 @@ SDK's ``A2AStarletteApplication`` into a single ASGI app you can run with
 - ``GET /.well-known/agent-card.json`` — the Agent Card manifest.
 - ``POST /`` — JSON-RPC endpoint (``message/send``, ``tasks/cancel``, …).
 - ``POST /stream`` — JSON-RPC + SSE streaming endpoint.
+- ``GET /openapi.json`` — OpenAPI 3.1 spec describing the three HTTP
+  endpoints above (with JSON-RPC examples per method).
+- ``GET /docs`` — Swagger UI rendering of the spec for interactive
+  exploration / "Try it out".
 
 Keeping this module thin means tests can build the app with a fake
 executor and hit the endpoints via ``starlette.testclient.TestClient``
@@ -18,8 +22,11 @@ from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
 from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import HTMLResponse, JSONResponse
 
 from functions.agent.agent_card import build_agent_card
+from functions.agent.openapi import SWAGGER_UI_HTML, build_openapi_spec
 from functions.agent.skills import ResearchAgentExecutor
 
 
@@ -43,4 +50,20 @@ def build_app(
         agent_card=agent_card,
         http_handler=request_handler,
     )
-    return a2a_app.build()
+    app = a2a_app.build()
+
+    # Attach OpenAPI + Swagger UI routes. The spec is built once at
+    # startup (pure function of ``url``); rebuilding per request would
+    # be wasteful. ``/docs`` is plain HTML pointing at ``/openapi.json``.
+    openapi_spec = build_openapi_spec(url=url)
+
+    async def openapi_handler(_request: Request) -> JSONResponse:
+        return JSONResponse(openapi_spec)
+
+    async def docs_handler(_request: Request) -> HTMLResponse:
+        return HTMLResponse(SWAGGER_UI_HTML)
+
+    app.router.add_route("/openapi.json", openapi_handler, methods=["GET"])
+    app.router.add_route("/docs", docs_handler, methods=["GET"])
+
+    return app

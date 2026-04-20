@@ -27,7 +27,7 @@ output**, and **fully typed settings**.
 
 | Concern | How it's handled |
 |---|---|
-| Correctness | TDD per module, 116 tests, 91% coverage. No module was written before its test was red. Every LLM JSON response is validated against a pydantic schema before reaching business logic. |
+| Correctness | TDD per module, 118 tests, 91% coverage. No module was written before its test was red. Every LLM JSON response is validated against a pydantic schema before reaching business logic. |
 | Reproducibility | Every external call (SERP, scrape, LLM) is cached in an append-only JSONL file. Second run of the same query issues zero HTTP + zero LLM calls. |
 | Debuggability | Every stage emits a structured log line (`{ts, level, logger, msg, stage, …}`) to a rotating file + stderr. |
 | Swap-ability | Every subcomponent is dependency-injected. Tests use a stub `call_fn` for Gemini and `respx` for HTTP. No vendor SDK is imported at module-load time. |
@@ -190,10 +190,26 @@ Serves on `http://127.0.0.1:8000` by default:
 - `GET  /.well-known/agent-card.json` — the Agent Card manifest.
 - `POST /` — JSON-RPC endpoint (`message/send`, `tasks/cancel`, …).
 - `POST /stream` — JSON-RPC + SSE streaming endpoint.
+- `GET  /docs` — **Swagger UI** for interactive exploration.
+- `GET  /openapi.json` — OpenAPI 3.1 spec that `/docs` renders.
 
 External A2A clients send `message/send` with the query as a `TextPart`;
 the server streams back `TaskStatusUpdate(working)` →
 `TaskArtifactUpdate` → `TaskStatusUpdate(completed, final=true)`.
+
+### Interactive API explorer
+
+Open `http://localhost:8000/docs` in a browser. You get Swagger UI
+rendering the three HTTP endpoints with a **method dropdown** under
+each JSON-RPC operation (`message/send`, `message/stream`, `tasks/get`,
+`tasks/cancel`) — each example is a valid JSON-RPC 2.0 body you can
+edit and **Try it out** directly against the running server.
+
+The spec itself is a pure function of the agent URL (built once at
+startup via `build_openapi_spec(url=...)`), and the Agent Card's
+pydantic schema is inlined under `components.schemas.AgentCard` with
+all 18 nested definitions, so the UI resolves every `$ref` correctly
+without extra tooling.
 
 ### Clear the caches
 
@@ -355,6 +371,7 @@ OnlineResearchAgent/
 ├── functions/
 │   ├── agent/
 │   │   ├── agent_card.py           # AgentCard builder
+│   │   ├── openapi.py              # OpenAPI 3.1 spec + Swagger UI HTML
 │   │   ├── server.py               # Starlette ASGI app (build_app)
 │   │   ├── skills.py               # ResearchAgentExecutor
 │   │   └── wiring.py               # build_pipeline(settings)
@@ -378,7 +395,7 @@ OnlineResearchAgent/
 │   ├── run_local.py                # CLI smoke
 │   ├── run_server.py               # A2A server bootstrap
 │   └── clear_cache.py              # wipe JSONL caches
-├── tests/                          # 116 tests, 91% coverage
+├── tests/                          # 118 tests, 91% coverage
 ├── artifacts/
 │   ├── cache/                      # JSONL caches (gitignored)
 │   └── logs/                       # rotating log file (gitignored)
@@ -398,7 +415,7 @@ OnlineResearchAgent/
 ## Test
 
 ```bash
-pytest                                   # 116 tests
+pytest                                   # 118 tests
 pytest --cov=functions --cov-report=term-missing
 ```
 
