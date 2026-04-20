@@ -1,0 +1,46 @@
+# Keep the build context small + never leak local artifacts into the image.
+
+# Secrets & local env
+.env
+.env.*
+!.env.example
+
+# Virtualenvs / caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+
+# Build outputs
+build/
+dist/
+*.egg-info/
+*.egg
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Runtime artifacts — containers mount fresh volumes for these
+artifacts/cache/*.jsonl
+artifacts/logs/*.log
+artifacts/logs/*.log.*
+
+# Dev-only files not needed at runtime
+tests/
+development_logs/
+README.md
+.git/
+.gitignore
+.github/

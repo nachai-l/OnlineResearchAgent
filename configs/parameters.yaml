@@ -1,0 +1,51 @@
+# Tunables for the A2A web research agent.
+
+search:
+  top_k_results: 8            # how many SERP results to fetch
+  top_k_to_scrape: 3          # how many selected URLs to actually scrape
+  serpapi_engine: google
+  serpapi_hl: en
+  serpapi_gl: us
+  cse_num: 10                 # max=10 per CSE call
+  timeout_seconds: 15
+
+scrape:
+  timeout_seconds: 20
+  max_chars_per_page: 20000   # truncate extracted main content
+  concurrency: 4
+  user_agent: "Mozilla/5.0 (compatible; A2A-WebResearch/0.1)"
+
+validation:
+  min_relevance: 0.6          # drop pages below this [0,1] score
+  min_trustworthiness: 0.4
+
+llm:
+  # backend: "gemini" speaks to google-genai directly using GEMINI_API_KEY.
+  # backend: "litellm" POSTs OpenAI-shaped chat/completions to a LiteLLM proxy.
+  # When using litellm, the `model` string must match one the proxy knows
+  # (e.g. "gemini/gemini-2.5-flash", "openai/gpt-4o-mini", "anthropic/claude-3-5-sonnet-latest").
+  backend: litellm
+  litellm_base_url: https://litellm.llm-platform-acn.com
+  model: gemini-2.5-flash
+  temperature: 0.2
+  max_output_tokens: 2048
+  request_timeout_seconds: 60
+  retries: 2
+
+cache:
+  enabled: true
+  dir: artifacts/cache
+  search_file: search_cache.jsonl
+  scrape_file: scrape_cache.jsonl
+  llm_file: llm_cache.jsonl
+
+logging:
+  level: INFO
+  dir: artifacts/logs
+  file: agent.log
+  max_bytes: 5242880          # 5 MiB
+  backup_count: 3
+
+server:
+  host: 127.0.0.1
+  port: 8000

@@ -1,0 +1,43 @@
+# Byte-compiled / optimized
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual env
+.venv/
+venv/
+env/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Tests / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Secrets (credentials.yaml is NOT secret — it only stores env-var names)
+.env
+.env.*
+!.env.example
+
+# Runtime artifacts (keep .gitkeep only)
+artifacts/cache/*.jsonl
+artifacts/logs/*.log
+artifacts/logs/*.log.*
+
+# OS
+.DS_Store
+Thumbs.db

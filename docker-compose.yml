@@ -1,0 +1,44 @@
+# One-command local deployment.
+#
+#   docker compose up --build
+#
+# The container reads secrets from `.env` in this directory (never baked
+# into the image) and persists JSONL caches + rotating logs onto named
+# volumes so they survive `docker compose down` and are inspectable from
+# the host filesystem under `./artifacts/`.
+
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: online-research-agent:latest
+    container_name: online-research-agent
+    restart: unless-stopped
+
+    # Secrets live only at runtime. The file name is intentionally
+    # `.env` (not `credentials.yaml`) to match scripts/run_local.py.
+    env_file:
+      - .env
+
+    environment:
+      # Bind to all interfaces inside the container so the host-mapped
+      # port actually reaches the app.
+      A2A_HOST: "0.0.0.0"
+      A2A_PORT: "8000"
+      # Override when running behind a reverse proxy, e.g.:
+      #   A2A_PUBLIC_URL: "https://research.example.com"
+      # Defaults to http://localhost:8000 for local `docker compose up`.
+      A2A_PUBLIC_URL: "${A2A_PUBLIC_URL:-http://localhost:8000}"
+
+    ports:
+      - "${A2A_HOST_PORT:-8000}:8000"
+
+    volumes:
+      # Persist JSONL caches across restarts so cache-hit behavior works
+      # across container lifecycles.
+      - ./artifacts/cache:/app/artifacts/cache
+      # Expose rotating logs on the host for easy grepping / tailing.
+      - ./artifacts/logs:/app/artifacts/logs
+
+    # Let the Dockerfile HEALTHCHECK control liveness; no override needed.
