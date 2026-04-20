@@ -91,16 +91,28 @@ cp .env.example .env                        # first time only — fill keys in
 docker compose up --build
 ```
 
-### From PowerShell (wrap every command with `wsl -d Ubuntu`)
+### From PowerShell (recommended)
+
+`cd` into the project first, then let WSL auto-translate your current
+Windows path into `/mnt/c/...` via `"$PWD"` — no typing the long path,
+no `...` placeholder to accidentally copy verbatim:
 
 ```powershell
-wsl -d Ubuntu --cd "/mnt/c/Users/nachai.limsettho/OneDrive - Accenture/Desktop/Codes/A2A_Agent/OnlineResearchAgent" docker compose up --build
+cd .\OnlineResearchAgent
+wsl -d Ubuntu --cd "$PWD" docker compose up --build
 ```
 
-Or, if you'd rather run the image directly:
+Verify the translation works once:
 
 ```powershell
-wsl -d Ubuntu --cd "/mnt/c/Users/nachai.limsettho/OneDrive - Accenture/Desktop/Codes/A2A_Agent/OnlineResearchAgent" docker run --rm -p 8000:8000 -e A2A_PUBLIC_URL=http://localhost:8000 --env-file .env online-research-agent:latest
+wsl -d Ubuntu --cd "$PWD" pwd
+# /mnt/c/Users/nachai.limsettho/OneDrive - Accenture/Desktop/Codes/A2A_Agent/OnlineResearchAgent
+```
+
+Or, if you'd rather run the image directly without compose:
+
+```powershell
+wsl -d Ubuntu --cd "$PWD" docker run --rm -p 8000:8000 -e A2A_PUBLIC_URL=http://localhost:8000 --env-file .env online-research-agent:latest
 ```
 
 > PowerShell does not honor Bash-style `\` line-continuation. Either
@@ -111,36 +123,98 @@ wsl -d Ubuntu --cd "/mnt/c/Users/nachai.limsettho/OneDrive - Accenture/Desktop/C
 
 ## Smoke test
 
-From Windows (PowerShell) — `curl` in PowerShell is an `Invoke-WebRequest`
-alias and will complain about headers, so use `curl.exe` or `irm`:
+### 1. Health check — Agent Card
+
+PowerShell's `curl` is an `Invoke-WebRequest` alias and mangles headers;
+use **`curl.exe`** (the real curl) or `irm`:
 
 ```powershell
 curl.exe http://localhost:8000/.well-known/agent-card.json
-# or
+# or, parsed + pretty:
 irm http://localhost:8000/.well-known/agent-card.json | ConvertTo-Json -Depth 10
 ```
 
-Or through WSL:
+### 2. Swagger UI (the easy path)
+
+Open `http://localhost:8000/docs` in a browser. For each `POST`
+operation, click **Try it out**, pick a method from the **Examples**
+dropdown (`message/send`, `message/stream`, `tasks/get`,
+`tasks/cancel`), then **Execute**. No curl, no quoting.
+
+> `http://localhost:8000/` in a browser returns `405 Method Not Allowed`
+> — **this is expected**. The root path is JSON-RPC POST only.
+> `/.well-known/agent-card.json` and `/docs` *do* render in a browser.
+
+### 3. JSON-RPC with curl — use `--data-binary @file`
+
+PowerShell has a long-standing bug where it strips embedded `"` when
+passing string arguments to native `.exe` programs, so
+`curl.exe --data-raw $body` sends mangled JSON and the server responds
+with `{"error":{"code":-32700,"message":"Expecting property name ..."}}`.
+
+The workaround is to write the body to a file and use
+`--data-binary @file` — curl reads it verbatim and never touches the
+quotes:
 
 ```powershell
-wsl bash -lc "curl -s http://localhost:8000/.well-known/agent-card.json | jq -r .url"
-# http://localhost:8000
+@"
+{
+  "jsonrpc": "2.0",
+  "id": "1",
+  "method": "message/send",
+  "params": {
+    "message": {
+      "role": "user",
+      "parts": [{"kind": "text", "text": "What is the Google A2A protocol?"}],
+      "messageId": "msg-1"
+    }
+  }
+}
+"@ | Out-File -Encoding ascii -NoNewline body.json
+
+curl.exe -X POST http://localhost:8000/ `
+  -H "Content-Type: application/json" `
+  --data-binary "@body.json"
 ```
 
-End-to-end client smoke:
+**Use `-Encoding ascii`** (not `utf8`) — a UTF-8 BOM trips the JSON-RPC
+parser too.
+
+### 4. JSON-RPC with `Invoke-RestMethod` (pure PowerShell)
+
+Lets PowerShell do the JSON serialization itself — no curl, no quote
+hand-off, no file:
 
 ```powershell
-python scripts/client_smoke.py "what is the Google A2A protocol?"
+$body = @{
+  jsonrpc = "2.0"
+  id      = "1"
+  method  = "message/send"
+  params  = @{
+    message = @{
+      role      = "user"
+      parts     = @(@{ kind = "text"; text = "What is the Google A2A protocol?" })
+      messageId = "msg-1"
+    }
+  }
+} | ConvertTo-Json -Depth 10
+
+irm -Method Post -Uri http://localhost:8000/ -ContentType "application/json" -Body $body
 ```
 
-You should see `TaskState.working` → `TaskState.completed` and the
-markdown summary printed.
+### 5. End-to-end client (recommended for most runs)
 
-> Hitting `http://localhost:8000/` in a browser returns `405 Method Not
-> Allowed` — **this is expected**. The root path is a JSON-RPC POST
-> endpoint, not a browsable page. The Agent Card at
-> `http://localhost:8000/.well-known/agent-card.json` *does* render in
-> a browser.
+The shipped smoke script handles Agent Card discovery, JSON-RPC framing,
+and streaming for you:
+
+```powershell
+python .\scripts\client_smoke.py "what is the Google A2A protocol?"
+```
+
+Expect `TaskState.working` → `TaskState.completed` plus the markdown
+summary and numbered sources. First run takes 20–60 s (live SERP +
+scrape + 3 LLM calls); a repeated query returns in < 1 s (all three
+JSONL caches hit).
 
 ---
 
@@ -184,7 +258,98 @@ python -m pip install -r requirements.txt
 ### Browser shows "Method Not Allowed" at `/`
 
 Not broken — see the smoke-test note above. Use
-`/.well-known/agent-card.json` for a browsable health check.
+`/.well-known/agent-card.json` or `/docs` for browsable endpoints.
+
+### `curl.exe --data-raw $body` → server returns JSON-RPC parse error
+
+Symptom:
+
+```json
+{"error":{"code":-32700,"message":"Expecting property name enclosed in double quotes: line 2 column 3 (char 4)"},"jsonrpc":"2.0"}
+```
+
+PowerShell strips the embedded `"` characters when passing `$body` to
+native `.exe` programs, so curl sends `{ jsonrpc: 2.0, ... }` (unquoted
+keys) and the server rejects it.
+
+Use **`--data-binary @body.json`** (see *Smoke test* section 3) or
+**`Invoke-RestMethod`** (section 4). Both avoid the quote hand-off to
+curl entirely.
+
+### `ModuleNotFoundError: No module named 'a2a.server.apps'` inside the container
+
+The running image was built against a newer `a2a-sdk` that refactored
+its module layout. The repo now pins `>=0.3.26,<0.4.0` in
+`requirements.txt`. Force a clean rebuild:
+
+```powershell
+wsl -d Ubuntu --cd "$PWD" docker compose down
+wsl -d Ubuntu --cd "$PWD" docker compose build --no-cache
+wsl -d Ubuntu --cd "$PWD" docker compose up
+```
+
+### `/mnt/c/.../OnlineResearchAgent` → `chdir() failed 2`
+
+You pasted the `...` placeholder verbatim. Use `"$PWD"` after
+`cd`'ing into the project folder, or spell out the full path:
+`/mnt/c/Users/nachai.limsettho/OneDrive - Accenture/Desktop/Codes/A2A_Agent/OnlineResearchAgent`.
+
+---
+
+## Cheat-sheet (tested)
+
+Run from `C:\...\A2A_Agent\OnlineResearchAgent\` in PowerShell with the
+venv activated. Each block is self-contained.
+
+| Step | Command |
+|------|---------|
+| **1. Start** | `wsl -d Ubuntu --cd "$PWD" docker compose up --build` |
+| **1. Start (detached)** | `wsl -d Ubuntu --cd "$PWD" docker compose up --build -d` |
+| **1. Tail logs** | `wsl -d Ubuntu --cd "$PWD" docker compose logs -f` |
+| **2. Swagger UI** | Browser → `http://localhost:8000/docs` |
+| **3a. Curl — Agent Card** | `curl.exe http://localhost:8000/.well-known/agent-card.json` |
+| **3b. Curl — `message/send`** | write body via `Out-File -Encoding ascii -NoNewline body.json` (see block below), then `curl.exe -X POST http://localhost:8000/ -H "Content-Type: application/json" --data-binary "@body.json"` |
+| **3c. PowerShell-native** | `irm -Method Post -Uri http://localhost:8000/ -ContentType "application/json" -Body $body` (see block below) |
+| **3d. Client smoke** | `python .\scripts\client_smoke.py "your query"` |
+| **Stop** | `wsl -d Ubuntu --cd "$PWD" docker compose down` |
+| **Force-kill port 8000** | `wsl -d Ubuntu bash -lc "docker ps -q --filter publish=8000 \| xargs -r docker stop"` |
+| **Rebuild (no cache)** | `wsl -d Ubuntu --cd "$PWD" docker compose build --no-cache` |
+
+### `body.json` for step 3b
+
+```powershell
+@"
+{
+  "jsonrpc": "2.0",
+  "id": "1",
+  "method": "message/send",
+  "params": {
+    "message": {
+      "role": "user",
+      "parts": [{"kind": "text", "text": "What is the Google A2A protocol?"}],
+      "messageId": "msg-1"
+    }
+  }
+}
+"@ | Out-File -Encoding ascii -NoNewline body.json
+```
+
+### `$body` hashtable for step 3c
+
+```powershell
+$body = @{
+  jsonrpc = "2.0"
+  id      = "1"
+  method  = "message/send"
+  params  = @{
+    message = @{
+      role      = "user"
+      parts     = @(@{ kind = "text"; text = "What is the Google A2A protocol?" })
+      messageId = "msg-1"
+    }
+  }
+} | ConvertTo-Json -Depth 10
+```
 
 ---
 

@@ -41,3 +41,6 @@ artifacts/logs/*.log.*
 # OS
 .DS_Store
 Thumbs.db
+
+# Local smoke-test scratch (JSON-RPC bodies written by the runbook)
+body.json
