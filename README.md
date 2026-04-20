@@ -17,7 +17,7 @@ every layer**, **structured-JSON logging**, and **fully typed settings**.
 
 | Concern | How it's handled |
 |---|---|
-| Correctness | TDD per module, 109 tests, 91% coverage. No module was written before its test was red. |
+| Correctness | TDD per module, 116 tests, 91% coverage. No module was written before its test was red. Every LLM JSON response is validated against a pydantic schema before reaching business logic. |
 | Reproducibility | Every external call (SERP, scrape, LLM) is cached in an append-only JSONL file. Second run of the same query issues zero HTTP + zero LLM calls. |
 | Debuggability | Every stage emits a structured log line (`{ts, level, logger, msg, stage, …}`) to a rotating file + stderr. |
 | Swap-ability | Every subcomponent is dependency-injected. Tests use a stub `call_fn` for Gemini and `respx` for HTTP. No vendor SDK is imported at module-load time. |
@@ -319,7 +319,7 @@ OnlineResearchAgent/
 │   ├── run_local.py                # CLI smoke
 │   ├── run_server.py               # A2A server bootstrap
 │   └── clear_cache.py              # wipe JSONL caches
-├── tests/                          # 109 tests, 91% coverage
+├── tests/                          # 116 tests, 91% coverage
 ├── artifacts/
 │   ├── cache/                      # JSONL caches (gitignored)
 │   └── logs/                       # rotating log file (gitignored)
@@ -337,7 +337,7 @@ OnlineResearchAgent/
 ## Test
 
 ```bash
-pytest                                   # 109 tests
+pytest                                   # 116 tests
 pytest --cov=functions --cov-report=term-missing
 ```
 
@@ -395,6 +395,51 @@ the log a grep-able audit trail:
 
 ---
 
+## Structured LLM output (pydantic)
+
+Every JSON response from the LLM is validated against a pydantic model
+*before* reaching business logic. Three wins:
+
+1. **Schema drift fails loud.** A prompt regression that makes the model
+   drop `relevance` or swap it for `relavence` raises instead of
+   silently scoring every page 0.0.
+2. **One retry budget covers everything.** `llm.retries` now gates
+   transport failures **and** JSON parse failures **and** schema
+   violations. A flaky formatter gets the same remediation as a flaky
+   network — retry, eventually give up, surface `LlmCallError`.
+3. **Cache self-heals.** If a cached response no longer satisfies the
+   current schema (e.g. you tightened a `Field(ge=0, le=1)` bound or
+   added a required field), the entry is treated as a miss; the fresh
+   response shadows it via last-write-wins. No manual cache flush.
+
+Three entry points on `GeminiClient`:
+
+```python
+await client.generate(system, user)                         # -> str
+await client.generate_json(system, user)                    # -> dict[str, Any]
+await client.generate_model(response_model=Foo, system, user)  # -> Foo
+```
+
+Response models live next to the prompt that shapes them:
+
+```python
+# functions/core/selection.py
+class _SelectionResponse(BaseModel):
+    picks: list[int]
+
+# functions/core/validation.py
+class _ValidationResponse(BaseModel):
+    relevance:       float = Field(ge=0.0, le=1.0)
+    trustworthiness: float = Field(ge=0.0, le=1.0)
+    reason:          str = ""
+```
+
+The consumer code shrinks to `response.relevance` — no `.get(..., 0.0)`,
+no `float(...)`, no clamping. Pydantic enforces the contract; the
+client enforces retries; the module enforces domain rules.
+
+---
+
 ## A2A protocol surface
 
 The agent conforms to A2A protocol version `0.3.0`:
@@ -412,6 +457,51 @@ The agent conforms to A2A protocol version `0.3.0`:
   `state=failed, final=True` (no pipeline invocation). Pipeline
   exception → same.
 - **Cancellation**: `cancel()` emits `state=canceled, final=True`.
+
+---
+
+## Register with the agent catalog
+
+The catalog's "Register Agent" form (URL mode) only needs the **base
+URL** — it fetches `/.well-known/agent-card.json` itself and reads skills,
+modes, and the JSON-RPC endpoint from the card. No manual-entry needed.
+
+| Where the catalog runs | Where the agent runs        | Register with                         |
+|------------------------|-----------------------------|---------------------------------------|
+| Same host, bare metal  | `python scripts/run_server.py` | `http://localhost:8000`           |
+| Same host, bare metal  | `docker compose up`         | `http://localhost:8000`               |
+| Docker / Docker Compose| On the host                 | `http://host.docker.internal:8000`    |
+| Docker / Docker Compose| Another container (same net)| `http://online-research-agent:8000`   |
+
+### Make the card reflect the registered URL
+
+The `url` field inside the Agent Card is what clients use to POST
+messages — it **must** match what you registered. Override it via
+`A2A_PUBLIC_URL` when running in Docker:
+
+```yaml
+# docker-compose.yml
+environment:
+  A2A_PUBLIC_URL: "http://host.docker.internal:8000"
+```
+
+Or on the command line:
+
+```bash
+docker run --rm -p 8000:8000 \
+  -e A2A_PUBLIC_URL=http://host.docker.internal:8000 \
+  --env-file .env \
+  online-research-agent:latest
+```
+
+Without this override the card would advertise `http://0.0.0.0:8000`
+(the container's bind address), which is not reachable from the
+catalog. Verify with:
+
+```bash
+curl http://localhost:8000/.well-known/agent-card.json | jq .url
+# "http://host.docker.internal:8000"
+```
 
 ---
 

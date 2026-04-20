@@ -13,11 +13,26 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
+from pydantic import BaseModel, Field
+
 from functions.core.scraping import ScrapedPage
 from functions.llm.client import GeminiClient, LlmCallError
 from functions.llm.prompts import PromptTemplate
 
 log = logging.getLogger(__name__)
+
+
+class _ValidationResponse(BaseModel):
+    """Expected shape of the validation prompt's JSON reply.
+
+    ``Field(ge=0, le=1)`` lets pydantic do the clamping + bounds check
+    in one pass; out-of-range scores fail validation and trigger the LLM
+    client's retry envelope rather than being silently clamped to 0/1.
+    """
+
+    relevance: float = Field(ge=0.0, le=1.0)
+    trustworthiness: float = Field(ge=0.0, le=1.0)
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -79,13 +94,13 @@ class PageValidator:
 
         user = self._template.render(query=query, content=page.content)
         try:
-            raw = await self._client.generate_json(
-                system=self._template.system, user=user
+            response = await self._client.generate_model(
+                response_model=_ValidationResponse,
+                system=self._template.system,
+                user=user,
             )
-            rel = float(raw.get("relevance", 0.0))
-            trust = float(raw.get("trustworthiness", 0.0))
-            reason = str(raw.get("reason", ""))
-        except (LlmCallError, ValueError, TypeError) as e:
+        except LlmCallError as e:
+            # Retries already exhausted upstream — this page gets dropped.
             log.warning(
                 "validator parse failed",
                 extra={"stage": "validate", "url": page.url, "exc": repr(e)},
@@ -98,11 +113,14 @@ class PageValidator:
                 kept=False,
             )
 
-        kept = rel >= self._min_rel and trust >= self._min_trust
+        kept = (
+            response.relevance >= self._min_rel
+            and response.trustworthiness >= self._min_trust
+        )
         return PageJudgement(
             url=page.url,
-            relevance=rel,
-            trustworthiness=trust,
-            reason=reason,
+            relevance=response.relevance,
+            trustworthiness=response.trustworthiness,
+            reason=response.reason,
             kept=kept,
         )

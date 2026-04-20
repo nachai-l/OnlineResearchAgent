@@ -12,12 +12,16 @@ import asyncio
 import json
 import logging
 import re
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable, Protocol, Type, TypeVar
 
 import httpx
+from pydantic import BaseModel, ValidationError
 
 from functions.core.cache import JsonlCache
 from functions.utils.hashing import stable_hash
+
+TModel = TypeVar("TModel", bound=BaseModel)
+TParsed = TypeVar("TParsed")
 
 log = logging.getLogger(__name__)
 
@@ -189,6 +193,103 @@ class GeminiClient:
         max_output_tokens: int | None = None,
         timeout: float | None = None,
     ) -> str:
+        """Return the raw text response. No parsing, no schema."""
+        return await self._generate_parsed(
+            post_process=_identity,
+            system=system,
+            user=user,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            timeout=timeout,
+        )
+
+    async def generate_json(
+        self,
+        *,
+        system: str,
+        user: str,
+        temperature: float | None = None,
+        max_output_tokens: int | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Parse the response as a JSON object.
+
+        JSON parse failures propagate through the retry envelope — a
+        flaky-on-format response gets the same ``llm.retries`` budget as a
+        flaky-on-transport one. Cache entries that fail to parse under the
+        current rules are treated as misses and refetched (self-heal).
+        """
+        return await self._generate_parsed(
+            post_process=_parse_json_object,
+            system=system,
+            user=user,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            timeout=timeout,
+        )
+
+    async def generate_model(
+        self,
+        *,
+        response_model: Type[TModel],
+        system: str,
+        user: str,
+        temperature: float | None = None,
+        max_output_tokens: int | None = None,
+        timeout: float | None = None,
+    ) -> TModel:
+        """Parse + validate the response against ``response_model``.
+
+        Uses ``pydantic.BaseModel.model_validate_json`` after stripping
+        code fences. ``ValidationError`` (schema mismatch) and
+        ``json.JSONDecodeError`` (bad JSON) both count as retryable
+        failures — the single ``llm.retries`` budget covers transport,
+        JSON, and schema. Cache entries that no longer satisfy the
+        model (schema drift) self-heal on read.
+        """
+        def _post_process(text: str) -> TModel:
+            cleaned = _strip_code_fences(text)
+            try:
+                return response_model.model_validate_json(cleaned)
+            except ValidationError as e:
+                raise LlmCallError(
+                    f"response failed {response_model.__name__} schema: {e}"
+                ) from e
+            except json.JSONDecodeError as e:
+                raise LlmCallError(
+                    f"model did not return valid JSON: {cleaned!r}"
+                ) from e
+
+        return await self._generate_parsed(
+            post_process=_post_process,
+            system=system,
+            user=user,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            timeout=timeout,
+        )
+
+    # ---- internals ---------------------------------------------------------
+
+    async def _generate_parsed(
+        self,
+        *,
+        post_process: Callable[[str], TParsed],
+        system: str,
+        user: str,
+        temperature: float | None,
+        max_output_tokens: int | None,
+        timeout: float | None,
+    ) -> TParsed:
+        """Core fetch + post-process + retry loop.
+
+        The post-processor runs inside the retry envelope so schema /
+        parse failures are retryable. Cache hits are run through the
+        post-processor too: if the cached text no longer satisfies the
+        post-processor (e.g. the caller upgraded to a stricter model),
+        the entry is treated as a miss and the fresh response shadows
+        it via the JSONL cache's last-write-wins semantics.
+        """
         temp = self._default_temperature if temperature is None else temperature
         max_tok = (
             self._default_max_output_tokens if max_output_tokens is None else max_output_tokens
@@ -208,43 +309,58 @@ class GeminiClient:
         if self._cache is not None:
             cached = self._cache.get(cache_key)
             if cached is not None:
-                log.info(
-                    "llm cache hit",
-                    extra={"stage": "llm", "cache": "hit", "model": self._model},
-                )
-                return cached["text"]
+                try:
+                    parsed = post_process(cached["text"])
+                except Exception as e:  # noqa: BLE001 — self-heal on schema drift
+                    log.info(
+                        "llm cache entry fails post-process, refetching",
+                        extra={
+                            "stage": "llm",
+                            "cache": "evict",
+                            "model": self._model,
+                            "exc": repr(e),
+                        },
+                    )
+                else:
+                    log.info(
+                        "llm cache hit",
+                        extra={"stage": "llm", "cache": "hit", "model": self._model},
+                    )
+                    return parsed
 
         call_fn = self._resolve_call_fn()
-        text = await self._invoke_with_retry(
-            call_fn,
-            model=self._model,
-            system=system,
-            user=user,
-            temperature=temp,
-            max_output_tokens=max_tok,
-            timeout=t,
+        last_exc: BaseException | None = None
+        for attempt in range(self._retries + 1):
+            try:
+                text = await call_fn(
+                    model=self._model,
+                    system=system,
+                    user=user,
+                    temperature=temp,
+                    max_output_tokens=max_tok,
+                    timeout=t,
+                )
+                parsed = post_process(text)
+            except Exception as e:  # noqa: BLE001 — retry envelope
+                last_exc = e
+                log.warning(
+                    "llm call failed, retrying",
+                    extra={"stage": "llm", "attempt": attempt, "exc": repr(e)},
+                )
+                if attempt < self._retries:
+                    await asyncio.sleep(self._retry_base_delay * (2**attempt))
+                continue
+            # Successful call + successful post-process → safe to cache.
+            if self._cache is not None:
+                self._cache.put(cache_key, {"text": text})
+            log.info(
+                "llm call ok",
+                extra={"stage": "llm", "cache": "miss", "model": self._model},
+            )
+            return parsed
+        raise LlmCallError(
+            f"LLM call failed after {self._retries + 1} attempts: {last_exc!r}"
         )
-
-        if self._cache is not None:
-            self._cache.put(cache_key, {"text": text})
-        log.info(
-            "llm call ok",
-            extra={"stage": "llm", "cache": "miss", "model": self._model},
-        )
-        return text
-
-    async def generate_json(self, **kwargs: Any) -> dict[str, Any]:
-        raw = await self.generate(**kwargs)
-        cleaned = _strip_code_fences(raw)
-        try:
-            parsed = json.loads(cleaned)
-        except json.JSONDecodeError as e:
-            raise LlmCallError(f"model did not return valid JSON: {cleaned!r}") from e
-        if not isinstance(parsed, dict):
-            raise LlmCallError(f"expected JSON object, got {type(parsed).__name__}")
-        return parsed
-
-    # ---- internals ---------------------------------------------------------
 
     def _resolve_call_fn(self) -> CallFn:
         if self._call_fn is not None:
@@ -257,21 +373,17 @@ class GeminiClient:
         self._call_fn = default_call_fn(self._api_key)
         return self._call_fn
 
-    async def _invoke_with_retry(
-        self,
-        call_fn: CallFn,
-        **kwargs: Any,
-    ) -> str:
-        last_exc: BaseException | None = None
-        for attempt in range(self._retries + 1):
-            try:
-                return await call_fn(**kwargs)
-            except Exception as e:  # noqa: BLE001 — retry envelope
-                last_exc = e
-                log.warning(
-                    "llm call failed, retrying",
-                    extra={"stage": "llm", "attempt": attempt, "exc": repr(e)},
-                )
-                if attempt < self._retries:
-                    await asyncio.sleep(self._retry_base_delay * (2**attempt))
-        raise LlmCallError(f"LLM call failed after {self._retries + 1} attempts: {last_exc!r}")
+
+def _identity(text: str) -> str:
+    return text
+
+
+def _parse_json_object(text: str) -> dict[str, Any]:
+    cleaned = _strip_code_fences(text)
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        raise LlmCallError(f"model did not return valid JSON: {cleaned!r}") from e
+    if not isinstance(parsed, dict):
+        raise LlmCallError(f"expected JSON object, got {type(parsed).__name__}")
+    return parsed

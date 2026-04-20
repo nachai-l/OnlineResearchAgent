@@ -8,13 +8,26 @@ fall back to the first ``top_k`` results so the pipeline still makes progress.
 from __future__ import annotations
 
 import logging
-from typing import Iterable
+
+from pydantic import BaseModel
 
 from functions.core.search import SearchResult
 from functions.llm.client import GeminiClient, LlmCallError
 from functions.llm.prompts import PromptTemplate
 
 log = logging.getLogger(__name__)
+
+
+class _SelectionResponse(BaseModel):
+    """Expected shape of the result-selection prompt's JSON reply.
+
+    Pydantic rejects non-list ``picks`` or non-int items up-front, so the
+    only fallback path left in ``ResultSelector.select`` is "no indices
+    survived out-of-range filtering" — a model that answered the wrong
+    question is retried by the LLM client before reaching this layer.
+    """
+
+    picks: list[int]
 
 
 class ResultSelector:
@@ -41,16 +54,15 @@ class ResultSelector:
         user = self._template.render(query=query, results=results_block)
 
         try:
-            raw = await self._client.generate_json(
-                system=self._template.system, user=user
+            response = await self._client.generate_model(
+                response_model=_SelectionResponse,
+                system=self._template.system,
+                user=user,
             )
-            picks_raw = raw.get("picks", [])
-            if not isinstance(picks_raw, Iterable) or isinstance(picks_raw, (str, bytes)):
-                raise LlmCallError("'picks' is not a list")
-            picked = _materialize(picks_raw, results)
+            picked = _materialize(response.picks, results)
             if not picked:
                 raise LlmCallError("no valid indices in 'picks'")
-        except (LlmCallError, TypeError, ValueError) as e:
+        except LlmCallError as e:
             log.warning(
                 "selection fallback to head",
                 extra={"stage": "select", "exc": repr(e), "top_k": top_k},
@@ -81,16 +93,17 @@ def _render_results_block(results: list[SearchResult]) -> str:
 
 
 def _materialize(
-    picks_raw: Iterable,
+    picks: list[int],
     results: list[SearchResult],
 ) -> list[SearchResult]:
+    """Keep only in-range, first-occurrence picks, preserving order.
+
+    Pydantic already guaranteed the items are ints, so this loop only
+    enforces domain rules — range + dedupe.
+    """
     seen: set[int] = set()
     out: list[SearchResult] = []
-    for item in picks_raw:
-        try:
-            idx = int(item)
-        except (TypeError, ValueError):
-            continue
+    for idx in picks:
         if idx < 0 or idx >= len(results) or idx in seen:
             continue
         seen.add(idx)
