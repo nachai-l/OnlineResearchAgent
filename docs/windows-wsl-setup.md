@@ -91,29 +91,21 @@ cp .env.example .env                        # first time only — fill keys in
 docker compose up --build
 ```
 
-### From PowerShell (recommended)
-
-`cd` into the project first, then let WSL auto-translate your current
-Windows path into `/mnt/c/...` via `"$PWD"` — no typing the long path,
-no `...` placeholder to accidentally copy verbatim:
+### From PowerShell (wrap every command with `wsl -d Ubuntu`)
 
 ```powershell
-cd .\OnlineResearchAgent
-wsl -d Ubuntu --cd "$PWD" docker compose up --build
-```
-
-Verify the translation works once:
-
-```powershell
-wsl -d Ubuntu --cd "$PWD" pwd
-# /mnt/c/Users/nachai.limsettho/OneDrive - Accenture/Desktop/Codes/A2A_Agent/OnlineResearchAgent
+wsl -d Ubuntu --cd "/mnt/c/Users/nachai.limsettho/OneDrive - Accenture/Desktop/Codes/A2A_Agent/OnlineResearchAgent" docker compose up --build
 ```
 
 Or, if you'd rather run the image directly without compose:
 
 ```powershell
-wsl -d Ubuntu --cd "$PWD" docker run --rm -p 8000:8000 -e A2A_PUBLIC_URL=http://localhost:8000 --env-file .env online-research-agent:latest
+wsl -d Ubuntu --cd "/mnt/c/Users/nachai.limsettho/OneDrive - Accenture/Desktop/Codes/A2A_Agent/OnlineResearchAgent" docker run --rm -p 8000:8000 -e A2A_PUBLIC_URL=http://localhost:8000 --env-file .env online-research-agent:latest
 ```
+
+> Tip: after `cd .\OnlineResearchAgent` you can replace the long
+> `/mnt/c/...` path with `"$PWD"` — WSL auto-translates. See the
+> Cheat-sheet recipe at the end for the compact form.
 
 > PowerShell does not honor Bash-style `\` line-continuation. Either
 > keep the command on one line (as above), use PowerShell backticks
@@ -283,9 +275,10 @@ its module layout. The repo now pins `>=0.3.26,<0.4.0` in
 `requirements.txt`. Force a clean rebuild:
 
 ```powershell
-wsl -d Ubuntu --cd "$PWD" docker compose down
-wsl -d Ubuntu --cd "$PWD" docker compose build --no-cache
-wsl -d Ubuntu --cd "$PWD" docker compose up
+$proj = "/mnt/c/Users/nachai.limsettho/OneDrive - Accenture/Desktop/Codes/A2A_Agent/OnlineResearchAgent"
+wsl -d Ubuntu --cd $proj docker compose down
+wsl -d Ubuntu --cd $proj docker compose build --no-cache
+wsl -d Ubuntu --cd $proj docker compose up
 ```
 
 ### `/mnt/c/.../OnlineResearchAgent` → `chdir() failed 2`
@@ -299,21 +292,26 @@ You pasted the `...` placeholder verbatim. Use `"$PWD"` after
 ## Cheat-sheet (tested)
 
 Run from `C:\...\A2A_Agent\OnlineResearchAgent\` in PowerShell with the
-venv activated. Each block is self-contained.
+venv activated. The path placeholder below is the canonical install
+location — substitute your own if different.
+
+```powershell
+$proj = "/mnt/c/Users/nachai.limsettho/OneDrive - Accenture/Desktop/Codes/A2A_Agent/OnlineResearchAgent"
+```
 
 | Step | Command |
 |------|---------|
-| **1. Start** | `wsl -d Ubuntu --cd "$PWD" docker compose up --build` |
-| **1. Start (detached)** | `wsl -d Ubuntu --cd "$PWD" docker compose up --build -d` |
-| **1. Tail logs** | `wsl -d Ubuntu --cd "$PWD" docker compose logs -f` |
+| **1. Start** | `wsl -d Ubuntu --cd $proj docker compose up --build` |
+| **1. Start (detached)** | `wsl -d Ubuntu --cd $proj docker compose up --build -d` |
+| **1. Tail logs** | `wsl -d Ubuntu --cd $proj docker compose logs -f` |
 | **2. Swagger UI** | Browser → `http://localhost:8000/docs` |
 | **3a. Curl — Agent Card** | `curl.exe http://localhost:8000/.well-known/agent-card.json` |
 | **3b. Curl — `message/send`** | write body via `Out-File -Encoding ascii -NoNewline body.json` (see block below), then `curl.exe -X POST http://localhost:8000/ -H "Content-Type: application/json" --data-binary "@body.json"` |
 | **3c. PowerShell-native** | `irm -Method Post -Uri http://localhost:8000/ -ContentType "application/json" -Body $body` (see block below) |
 | **3d. Client smoke** | `python .\scripts\client_smoke.py "your query"` |
-| **Stop** | `wsl -d Ubuntu --cd "$PWD" docker compose down` |
+| **Stop** | `wsl -d Ubuntu --cd $proj docker compose down` |
 | **Force-kill port 8000** | `wsl -d Ubuntu bash -lc "docker ps -q --filter publish=8000 \| xargs -r docker stop"` |
-| **Rebuild (no cache)** | `wsl -d Ubuntu --cd "$PWD" docker compose build --no-cache` |
+| **Rebuild (no cache)** | `wsl -d Ubuntu --cd $proj docker compose build --no-cache` |
 
 ### `body.json` for step 3b
 
