@@ -32,6 +32,7 @@ coverage.xml
 .env
 .env.*
 !.env.example
+k8s/secret.yaml
 
 # Runtime artifacts (keep .gitkeep only)
 artifacts/cache/*.jsonl

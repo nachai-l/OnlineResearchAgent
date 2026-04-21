@@ -1,21 +1,12 @@
 # syntax=docker/dockerfile:1.7
 #
-# A2A Web Research Agent — deployable image.
+# Online Research Agent — production image.
 #
-# Two-stage build:
-#   1. `builder` installs Python deps into /opt/venv so compilation artifacts
-#      (lxml wheels, trafilatura's binaries) don't bloat the final image.
-#   2. `runtime` copies the populated venv + source tree onto a slim base
-#      and runs as an unprivileged user.
-#
-# The image is configuration-driven: no secrets or environment-specific
-# values are baked in. Runtime behavior is controlled via:
-#   - `.env` file mounted / passed with `--env-file`
-#   - `A2A_HOST` / `A2A_PORT` / `A2A_PUBLIC_URL` env-var overrides (honored
-#     by scripts/run_server.py)
-#   - volume mounts for `/app/artifacts/cache` (JSONL cache) and
-#     `/app/artifacts/logs` (rotating log file) so data survives container
-#     restarts and is inspectable from the host.
+# Two-stage build: a `builder` stage compiles Python deps into /opt/venv,
+# then `runtime` copies that venv onto a slim base and runs as a non-root
+# user. No secrets or environment-specific values are baked in — runtime
+# behavior is controlled via env vars (A2A_HOST / A2A_PORT / A2A_PUBLIC_URL
+# plus the API-key vars listed in configs/credentials.yaml).
 
 # ---------- builder ----------------------------------------------------------
 FROM python:3.12-slim AS builder
@@ -25,7 +16,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Build deps for trafilatura (lxml) + httpx. Kept only in the builder stage.
+# Build deps for lxml (trafilatura). Dev headers stay in this stage only.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         libxml2-dev \
@@ -50,7 +41,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     A2A_HOST=0.0.0.0 \
     A2A_PORT=8000
 
-# Runtime-only shared libs for lxml (trafilatura). Dev headers stay behind.
+# Runtime shared libs for lxml; create non-root user in the same layer.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libxml2 \
         libxslt1.1 \
@@ -61,28 +52,21 @@ COPY --from=builder /opt/venv /opt/venv
 
 WORKDIR /app
 
-# Copy source. Paths listed explicitly so stray local artifacts (`.venv`,
-# `.pytest_cache`, `artifacts/cache/*.jsonl`) never enter the image even
-# if `.dockerignore` is incomplete.
+# Paths listed explicitly so local build context junk (.venv, caches, logs)
+# never enters the image even if .dockerignore drifts.
 COPY functions /app/functions
 COPY prompts   /app/prompts
 COPY configs   /app/configs
 COPY scripts   /app/scripts
 
-# Create writable artifact dirs. Chown so the non-root user can write logs
-# and JSONL caches at runtime. These are typically bind-mounted over, but
-# the baked directories mean the image also works unmounted.
+# Writable dirs for rotating logs + JSONL caches. In k8s these are typically
+# mounted over with emptyDir / PVC; the baked dirs keep the image runnable
+# standalone (docker run) without extra mounts.
 RUN mkdir -p /app/artifacts/cache /app/artifacts/logs \
     && chown -R app:app /app
 
 USER app
 
 EXPOSE 8000
-
-# Simple TCP liveness check against the Agent Card endpoint.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD python -c "import urllib.request,sys; \
-urllib.request.urlopen('http://127.0.0.1:${A2A_PORT}/.well-known/agent-card.json', timeout=3); \
-sys.exit(0)" || exit 1
 
 CMD ["python", "scripts/run_server.py"]

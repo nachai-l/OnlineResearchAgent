@@ -26,6 +26,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
 
 from functions.agent.agent_card import build_agent_card
+from functions.agent.legacy_compat import LegacyA2ACompatMiddleware
 from functions.agent.openapi import SWAGGER_UI_HTML, build_openapi_spec
 from functions.agent.skills import ResearchAgentExecutor
 
@@ -65,5 +66,9 @@ def build_app(
 
     app.router.add_route("/openapi.json", openapi_handler, methods=["GET"])
     app.router.add_route("/docs", docs_handler, methods=["GET"])
+
+    # Accept v0.1/v0.2 JSON-RPC envelopes (tasks/send, parts[].type,
+    # sessionId) from legacy clients that can't be updated to v0.3.
+    app.add_middleware(LegacyA2ACompatMiddleware)
 
     return app

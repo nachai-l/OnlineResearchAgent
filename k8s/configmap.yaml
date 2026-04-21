@@ -1,0 +1,68 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: online-research-agent-configmap
+  namespace: scb
+data:
+  # --- Env-var knobs (consumed via configMapKeyRef in deployment.yaml) ---
+  A2A_HOST: "0.0.0.0"
+  A2A_PORT: "8000"
+  A2A_PUBLIC_URL: "http://online-research-agent-backend-svc.scb.svc.cluster.local:8000"
+
+  # --- File mounted at /app/configs/parameters.yaml in deployment.yaml ---
+  # Edit, `kubectl apply`, then `kubectl rollout restart deploy/online-research-agent -n scb`
+  # to pick up changes. No image rebuild needed.
+  #
+  # credentials.yaml is NOT kept here — it's static env-var-name wiring
+  # (SERPAPI_API_KEY, GOOGLE_CSE_API_KEY, ...) that is already expressed
+  # as explicit env entries in deployment.yaml. The image-baked copy at
+  # /app/configs/credentials.yaml satisfies the file read in
+  # functions.utils.config.load_settings.
+  parameters.yaml: |
+    search:
+      top_k_results: 8
+      top_k_to_scrape: 3
+      serpapi_engine: google
+      serpapi_hl: en
+      serpapi_gl: us
+      cse_num: 10
+      timeout_seconds: 15
+
+    scrape:
+      timeout_seconds: 20
+      max_chars_per_page: 20000
+      concurrency: 4
+      user_agent: "Mozilla/5.0 (compatible; A2A-WebResearch/0.1)"
+
+    validation:
+      min_relevance: 0.6
+      min_trustworthiness: 0.4
+
+    llm:
+      backend: litellm
+      litellm_base_url: https://litellm.llm-platform-acn.com
+      model: gemini-2.5-flash
+      temperature: 0.2
+      max_output_tokens: 2048
+      request_timeout_seconds: 60
+      retries: 2
+
+    cache:
+      enabled: true
+      dir: artifacts/cache
+      search_file: search_cache.jsonl
+      scrape_file: scrape_cache.jsonl
+      llm_file: llm_cache.jsonl
+
+    logging:
+      level: INFO
+      dir: artifacts/logs
+      file: agent.log
+      max_bytes: 5242880
+      backup_count: 3
+
+    server:
+      # Overridden at runtime by A2A_HOST / A2A_PORT env vars above.
+      host: 127.0.0.1
+      port: 8000
+      

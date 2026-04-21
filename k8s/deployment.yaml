@@ -1,0 +1,102 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: online-research-agent
+  namespace: scb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: online-research-agent
+  template:
+    metadata:
+      labels:
+        app: online-research-agent
+    spec:
+      containers:
+        - name: online-research-agent
+          image: "asia-southeast1-docker.pkg.dev/acn-ktb-hybridco/llm-platform/online-research-agent:0.0.2"
+          imagePullPolicy: Always
+          env:
+            - name: A2A_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: online-research-agent-configmap
+                  key: A2A_HOST
+            - name: A2A_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: online-research-agent-configmap
+                  key: A2A_PORT
+            - name: A2A_PUBLIC_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: online-research-agent-configmap
+                  key: A2A_PUBLIC_URL
+            - name: SERPAPI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: online-research-agent-secret
+                  key: SERPAPI_API_KEY
+            - name: GOOGLE_CSE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: online-research-agent-secret
+                  key: GOOGLE_CSE_API_KEY
+            - name: GOOGLE_CSE_CX
+              valueFrom:
+                secretKeyRef:
+                  name: online-research-agent-secret
+                  key: GOOGLE_CSE_CX
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: online-research-agent-secret
+                  key: GEMINI_API_KEY
+            - name: LITELLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: online-research-agent-secret
+                  key: LITELLM_API_KEY
+          ports:
+            - containerPort: 8000
+              name: http
+              protocol: TCP
+          volumeMounts:
+            # Mount ONLY parameters.yaml via subPath so we don't shadow the
+            # whole /app/configs directory — credentials.yaml baked into the
+            # image (configs/credentials.yaml) must remain visible because
+            # functions.utils.config.load_settings reads it at startup.
+            - name: config
+              mountPath: /app/configs/parameters.yaml
+              subPath: parameters.yaml
+              readOnly: true
+          resources:
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+            requests:
+              memory: "1Gi"
+              cpu: "300m"
+          livenessProbe:
+            httpGet:
+              path: /.well-known/agent-card.json
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /.well-known/agent-card.json
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: online-research-agent-configmap
+            # Project only parameters.yaml; the flat env-var keys
+            # (A2A_HOST / A2A_PORT / A2A_PUBLIC_URL) stay env-only and
+            # credentials.yaml lives in the image, not the ConfigMap.
+            items:
+              - key: parameters.yaml
+                path: parameters.yaml
